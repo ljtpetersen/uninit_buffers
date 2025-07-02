@@ -1,0 +1,14 @@
+[package]
+name = "uninit_buffers"
+version = "0.1.0"
+edition = "2024"
+authors = ["James Petersen <m@jamespetersen.ca>"]
+license = "MIT OR Apache-2.0"
+description = "Safe uninitialized buffers that take input from functions or iterators."
+homepage = "https://jamespetersen.ca/uninit_buffers"
+readme = "README.md"
+repository = "https://github.com/ljtpetersen/uninit_buffers"
+keywords = ["buffer", "buffering", "safe", "uninitialized",   "caching"]
+categories = ["caching", "data-structures", "no-std"]
+
+[dependencies]
