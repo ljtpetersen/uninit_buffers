@@ -5,7 +5,7 @@
 [latest version]: https://img.shields.io/crates/v/uninit_buffers
 [crates.io]: https://crates.io/crates/uninit_buffers
 [docs passing]: https://img.shields.io/docsrs/uninit_buffers
-[docs.rs]: https://docs.rs/homedir/latest/uninit_buffers/
+[docs.rs]: https://docs.rs/uninit_buffers/latest/uninit_buffers/
 
 This crate aims to fill a hole in the currently-unstable `MaybeUninit` slice-filling API: there is
 a safe way to fill a slice, but there is no safe way to drop elements of the slice. For this purpose,

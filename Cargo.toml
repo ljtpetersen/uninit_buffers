@@ -1,6 +1,6 @@
 [package]
 name = "uninit_buffers"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["James Petersen <m@jamespetersen.ca>"]
 license = "MIT OR Apache-2.0"
