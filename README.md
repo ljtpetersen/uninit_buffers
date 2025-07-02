@@ -15,7 +15,7 @@ Regarding safety, we treat the `Initialized` structure as if it owns the element
 by using the `SliceExt` trait, which is implemented on all `MaybeUninit` slices.
 
 ## Usage
-This crate is on [crates.io](https://crates.io/crates/uninit_buffers) and can beused
+This crate is on [crates.io](https://crates.io/crates/uninit_buffers) and can be used
 by executing `cargo add uninit_buffers` or by adding the following to the dependencies in your
 `Cargo.toml` file.
 
