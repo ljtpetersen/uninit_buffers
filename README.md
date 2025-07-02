@@ -1,6 +1,7 @@
-# uninit_buffers &emsp; [![Build Status]][actions] [![latest version]][crates.io] [![docs passing]][docs.rs]
+# uninit_buffers &emsp; [![Build Status] ![Miri]][actions] [![latest version]][crates.io] [![docs passing]][docs.rs]
 
 [Build Status]: https://img.shields.io/github/actions/workflow/status/ljtpetersen/uninit_buffers/rust.yml
+[Miri]: https://img.shields.io/github/actions/workflow/status/ljtpetersen/uninit_buffers/miri.yml?label=miri
 [actions]: https://github.com/ljtpetersen/uninit_buffers/actions
 [latest version]: https://img.shields.io/crates/v/uninit_buffers
 [crates.io]: https://crates.io/crates/uninit_buffers
