@@ -638,8 +638,8 @@ impl<T> IntoIter<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use core::cell::RefCell;
-    use std::collections::HashSet;
+    use core::{cell::RefCell, sync::atomic::AtomicUsize};
+    use std::{collections::HashSet, panic::{catch_unwind, set_hook, take_hook, PanicHookInfo}, sync::mpsc::{channel, Sender}};
 
     use super::*;
 
@@ -861,6 +861,35 @@ mod tests {
         assert!(set.borrow().is_empty(), "set is not empty");
     }
 
+    #[derive(Debug, PartialEq)]
+    enum DropLogEntry {
+        Init(usize),
+        Drop(usize),
+    }
+
+    #[derive(Debug)]
+    struct DropLog {
+        id: Option<usize>,
+        log: Sender<DropLogEntry>,
+    }
+
+    impl DropLog {
+        fn new(id: Option<usize>, log: Sender<DropLogEntry>) -> Self {
+            if let Some(id) = id {
+                log.send(DropLogEntry::Init(id)).unwrap();
+            }
+            Self { id, log }
+        }
+    }
+
+    impl Drop for DropLog {
+        fn drop(&mut self) {
+            if let Some(id) = self.id.as_ref() {
+                self.log.send(DropLogEntry::Drop(*id)).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn try_write_iter() {
         const CAP: usize = 10;
@@ -885,5 +914,225 @@ mod tests {
         let (initialized, remainder) = buf.try_write_iter_owned(third_batch).unwrap();
         assert!(initialized.into_iter().eq(0..CAP));
         assert!(remainder.is_empty());
+
+        const GOOD: usize = 3;
+        let (tx, rx) = channel();
+        let fourth_batch = (0..GOOD).map(|j| Ok(DropLog::new(Some(j), tx.clone())))
+            .chain([Err("err")]);
+        let mut buf = [const { MaybeUninit::uninit() }; CAP];
+        assert_eq!(buf.try_write_iter_owned(fourth_batch).unwrap_err(), "err");
+        let expected = (0..GOOD).map(DropLogEntry::Init).chain((0..GOOD).map(DropLogEntry::Drop));
+        drop(tx);
+        assert!(rx.iter().eq(expected));
+    }
+
+    #[test]
+    fn write_iter_panic() {
+        let prev_hook = take_hook();
+        let new_hook = move |info: &PanicHookInfo<'_>| {
+            // if we intentionally panic, do nothing.
+            if let Some(v) = info.payload().downcast_ref::<&'static str>() && *v == "intentional panic" {
+                return;
+            }
+            prev_hook(info);
+        };
+        set_hook(Box::new(new_hook));
+
+        let (tx, rx) = channel();
+        const CAP: usize = 10;
+        const GOOD: usize = 3;
+        assert_eq!(
+            catch_unwind(move || {
+                let mut buf = [const { MaybeUninit::uninit() }; CAP];
+                let iter = (0..GOOD).map(|j| DropLog::new(Some(j), tx.clone()))
+                    .chain([()].into_iter().map(|_| panic!("intentional panic")));
+                let _ = buf.write_iter_owned(iter);
+            }).unwrap_err().downcast_ref::<&'static str>(),
+            Some(&"intentional panic"),
+        );
+        // when the iterator panics, the previously-returned values are correctly dropped.
+        let expected_log = (0..GOOD).map(DropLogEntry::Init).chain((0..GOOD).map(DropLogEntry::Drop));
+        assert!(rx.iter().eq(expected_log));
+    }
+
+    #[test]
+    fn try_write_iter_panic() {
+        let prev_hook = take_hook();
+        let new_hook = move |info: &PanicHookInfo<'_>| {
+            // if we intentionally panic, do nothing.
+            if let Some(v) = info.payload().downcast_ref::<&'static str>() && *v == "intentional panic" {
+                return;
+            }
+            prev_hook(info);
+        };
+        set_hook(Box::new(new_hook));
+
+        let (tx, rx) = channel();
+        const CAP: usize = 10;
+        const GOOD: usize = 3;
+        assert_eq!(
+            catch_unwind(move || {
+                let mut buf = [const { MaybeUninit::uninit() }; CAP];
+                let iter = (0..GOOD).map(|j| Ok::<_, ()>(DropLog::new(Some(j), tx.clone())))
+                    .chain([()].into_iter().map(|_| panic!("intentional panic")));
+                let _ = buf.write_iter_owned(iter);
+            }).unwrap_err().downcast_ref::<&'static str>(),
+            Some(&"intentional panic"),
+        );
+        // when the iterator panics, the previously-returned values are correctly dropped.
+        let expected_log = (0..GOOD).map(DropLogEntry::Init).chain((0..GOOD).map(DropLogEntry::Drop));
+        assert!(rx.iter().eq(expected_log));
+    }
+
+    #[test]
+    fn write_with_panic() {
+        let prev_hook = take_hook();
+        let new_hook = move |info: &PanicHookInfo<'_>| {
+            // if we intentionally panic, do nothing.
+            if let Some(v) = info.payload().downcast_ref::<&'static str>() && *v == "intentional panic" {
+                return;
+            }
+            prev_hook(info);
+        };
+        set_hook(Box::new(new_hook));
+
+        let (tx, rx) = channel();
+        const CAP: usize = 10;
+        const GOOD: usize = 3;
+        assert_eq!(
+            catch_unwind(move || {
+                let mut buf = [const { MaybeUninit::uninit() }; CAP];
+                let _ = buf.write_with_owned(|j| {
+                    if j == GOOD { panic!("intentional panic") }
+                    else {
+                        DropLog::new(Some(j), tx.clone())
+                    }
+                });
+            }).unwrap_err().downcast_ref::<&'static str>(),
+            Some(&"intentional panic"),
+        );
+        // when the iterator panics, the previously-returned values are correctly dropped.
+        let expected_log = (0..GOOD).map(DropLogEntry::Init).chain((0..GOOD).map(DropLogEntry::Drop));
+        assert!(rx.iter().eq(expected_log));
+    }
+
+    #[derive(Debug)]
+    struct BadCloneFill<'a> {
+        drop_log: DropLog,
+        shared_count: &'a AtomicUsize,
+        panic_on: usize,
+    }
+
+    impl<'a> BadCloneFill<'a> {
+        fn new(log: Sender<DropLogEntry>, shared_count: &'a AtomicUsize, panic_on: usize) -> Self {
+            shared_count.store(0, core::sync::atomic::Ordering::Relaxed);
+            Self {
+                drop_log: DropLog::new(Some(0), log),
+                shared_count,
+                panic_on,
+            }
+        }
+    }
+
+    impl Clone for BadCloneFill<'_> {
+        fn clone(&self) -> Self {
+            let oldcount = self.shared_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if oldcount + 1 == self.panic_on {
+                panic!("intentional panic");
+            }
+            Self {
+                drop_log: DropLog::new(Some(oldcount + 1), self.drop_log.log.clone()),
+                shared_count: self.shared_count,
+                panic_on: self.panic_on,
+            }
+        }
+    }
+
+    #[test]
+    fn write_filled_panic() {
+        let prev_hook = take_hook();
+        let new_hook = move |info: &PanicHookInfo<'_>| {
+            // if we intentionally panic, do nothing.
+            if let Some(v) = info.payload().downcast_ref::<&'static str>() && *v == "intentional panic" {
+                return;
+            }
+            prev_hook(info);
+        };
+        set_hook(Box::new(new_hook));
+
+        let (tx, rx) = channel();
+        const CAP: usize = 10;
+        const GOOD: usize = 3;
+        assert_eq!(
+            catch_unwind(move || {
+                let mut buf = [const { MaybeUninit::uninit() }; CAP];
+                let at = AtomicUsize::new(0);
+                let _ = buf.write_filled_owned(BadCloneFill::new(tx.clone(), &at, GOOD));
+            }).unwrap_err().downcast_ref::<&'static str>(),
+            Some(&"intentional panic"),
+        );
+        // when the iterator panics, the previously-returned values are correctly dropped.
+        // the drop order is 1, 2, 0, because 0 is a parameter of filled, which will obviously only
+        // be dropped last.
+        let expected_log = (0..GOOD).map(DropLogEntry::Init)
+            .chain((1..GOOD).map(DropLogEntry::Drop))
+            .chain([DropLogEntry::Drop(0)]);
+        assert!(rx.iter().eq(expected_log));
+    }
+
+    #[derive(Debug)]
+    struct BadClone {
+        drop_log: DropLog,
+        do_panic: bool,
+    }
+
+    impl Clone for BadClone {
+        fn clone(&self) -> Self {
+            if self.do_panic {
+                panic!("intentional panic");
+            } else {
+                Self {
+                    drop_log: DropLog::new(self.drop_log.id, self.drop_log.log.clone()),
+                    do_panic: self.do_panic,
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn write_clone_of_slice_panic() {
+        let prev_hook = take_hook();
+        let new_hook = move |info: &PanicHookInfo<'_>| {
+            // if we intentionally panic, do nothing.
+            if let Some(v) = info.payload().downcast_ref::<&'static str>() && *v == "intentional panic" {
+                return;
+            }
+            prev_hook(info);
+        };
+        set_hook(Box::new(new_hook));
+
+        let (tx, rx) = channel();
+        const CAP: usize = 10;
+        const GOOD: usize = 3;
+    
+        let orig = (0..CAP)
+            .map(|j| BadClone { drop_log: DropLog::new(Some(j), tx.clone()), do_panic: j == GOOD })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            catch_unwind(|| {
+                let mut buf = [const { MaybeUninit::uninit() }; CAP];
+                let _ = buf.write_clone_of_slice_owned(&orig);
+            }).unwrap_err().downcast_ref::<&'static str>(),
+            Some(&"intentional panic"),
+        );
+        drop(tx);
+        drop(orig);
+        // when the iterator panics, the previously-returned values are correctly dropped.
+        let expected_log = (0..CAP).map(DropLogEntry::Init)
+            .chain((0..GOOD).map(DropLogEntry::Init))
+            .chain((0..GOOD).map(DropLogEntry::Drop))
+            .chain((0..CAP).map(DropLogEntry::Drop));
+        assert!(rx.iter().eq(expected_log));
     }
 }
